@@ -2,65 +2,53 @@
 
 This project gives you two Roblox scripts:
 
-* `TankSuspension.lua` – the module that handles springs, dampers, and wheel motors.
-* `TankController.server.lua` – the script that reads the driver seat and talks to the module.
+* `TankSuspension.lua` – a raycast suspension module that applies springs, dampers, and traction forces at each wheel attachment.
+* `TankController.server.lua` – a helper script that reads a `VehicleSeat` and feeds the input into the suspension module.
 
-Follow the steps below in Roblox Studio to make the scripts work. Keep the names exactly the same so the code can find everything.
+Follow the steps below to set everything up. No wheel constraints or springs are needed—just attachments that mark where the wheels go.
 
-## 1. Build the tank model
-1. Create a **Model** named **Tank**. Set its `PrimaryPart` to the main body part (call it **Hull**).
-2. Add a **VehicleSeat** named **DriverSeat** and weld it to the Hull.
-3. Inside the Tank model create a **Folder** named **WheelAssemblies**. Each wheel assembly will go inside this folder.
+## 1. Prepare the tank model
+1. Create a **Model** named **Tank** and set its `PrimaryPart` to the main body part (call it **Hull**).
+2. Add a **VehicleSeat** named **DriverSeat**. Weld or constrain it to the Hull so it moves with the body.
 
-## 2. Add hull attachments (repeat for every wheel)
-For each wheel you plan to add, make two attachments on the Hull:
+## 2. Place the wheel attachments
+1. Inside the Hull, insert an **Attachment** for every wheel location.
+2. Name them `Wheel_L1`, `Wheel_R1`, `Wheel_L2`, `Wheel_R2`, and so on. Use `L` for the tank's left side and `R` for the right; increase the numbers from front to back.
+3. Move each attachment to the spot where the wheel should contact the ground.
+4. Rotate the attachment so its green arrow (the attachment's up axis) points straight down toward the ground and the red arrow points toward the front of the tank. The script uses this orientation to know which way is up, forward, and sideways.
 
-* `SuspensionMount_L1`, `SuspensionMount_R1`, `SuspensionMount_L2`, … (L = left, R = right, numbers go from front to back).
-* `DamperMount_L1`, `DamperMount_R1`, `DamperMount_L2`, … (match the same numbers as the suspension mounts).
+You can duplicate the first attachment to create the others—just rename each copy to match its side and index.
 
-Place the attachments roughly above where the wheel should sit. Point their green arrow (the attachment axis) straight down.
+## 3. (Optional) Add wheel visuals
+The physics only need the attachments, but you can still add wheel meshes or parts for visuals. Weld them to the Hull or use constraints of your choice; the suspension forces are applied directly to the Hull.
 
-## 3. Create one wheel assembly
-Make a **Model** under `WheelAssemblies` called `WheelAssembly_L1` (copy it later for the other wheels). Inside that model add:
-
-1. **Part** named **Hub**. Add two attachments inside the Hub:
-   * `SpringAttachment` – where the spring connects.
-   * `DamperAttachment` – where the damper force connects.
-2. **Attachment** named **AxleAttachment** (parented to the Hub). Point its green arrow sideways, the same direction the wheel spins.
-3. **Part** named **Wheel**. Add an attachment inside it called `WheelAttachment` centred on the axle.
-4. **CylindricalConstraint** named **WheelConstraint** (parented to the Wheel). Set `Attachment0` to `Hub.AxleAttachment`, `Attachment1` to `Wheel.WheelAttachment`, and set `AngularActuatorType` to `Motor`.
-5. **SpringConstraint** named **SuspensionSpring**. Set `Attachment0` to the matching `Hull.SuspensionMount_L1` (or R1, etc.) and `Attachment1` to `Hub.SpringAttachment`.
-
-When the first wheel works, duplicate the wheel assembly model. Rename each copy to match its side and index (for example `WheelAssembly_R1`, `WheelAssembly_L2`, …) and update the spring’s `Attachment0` to use the matching hull attachment.
-
-## 4. Add attributes for tuning
-Every wheel assembly model (`WheelAssembly_L1`, etc.) needs these **Number** attributes. The values below are safe starting points:
-
-| Attribute | Example value | What it does |
-| --- | --- | --- |
-| `RestLength` | `2` | Length the spring wants to stay at.
-| `SpringStiffness` | `12000` | Strength of the spring.
-| `DamperCoefficient` | `2500` | How much the wheel resists bouncing.
-| `RaycastLength` | `3` | How far down to check for ground.
-| `WheelRadius` | `1.5` | Size of the wheel.
-| `DesignLoad` | `1500` | Weight the wheel should support.
-
-Set these **Number** attributes on the Tank model itself (change later if you like):
-
-| Attribute | Default | Purpose |
-| --- | --- | --- |
-| `MaxForwardSpeed` | `24` | Top speed going forward.
-| `MaxReverseSpeed` | `12` | Top speed going backward.
-| `TurnRate` | `0.5` | How sharply the tank can pivot.
-| `DriveTorque` | `65000` | Power given to each wheel.
-| `BrakeTorque` | `90000` | Force used when braking or empty.
-| `MaxDampingForce` | `80000` | Safety limit on damper force.
-| `AirDampingScale` | `0.2` | Damping when a wheel leaves the ground.
-
-## 5. Install the scripts
+## 4. Install the scripts
 1. Copy **TankSuspension.lua** into a ModuleScript (for example `ServerScriptService/TankSuspension`).
 2. Copy **TankController.server.lua** into a Script parented to the Tank model.
-3. Open the controller script and set the `TankSuspensionModule` variable at the top if you put the module somewhere else.
-4. Press Play. If you see an error, read the message—it will usually tell you which attachment, attribute, or name is wrong.
+3. Open the controller script and edit the `SETTINGS` table near the top. These numbers control how stiff the springs are, how sticky the tracks feel, and how fast the tank drives.
+4. If you move the ModuleScript, update the require path in the controller script (the default lookup already covers a sibling `TankSuspension` module or one in `ServerScriptService`).
 
-That’s it! Adjust the numbers until the tank feels right for your game.
+## 5. Tune the suspension values
+Each section of the `SETTINGS` table controls a part of the simulation:
+
+* `Suspension`
+  * `RestLength` – Distance (in studs) the spring wants to keep between the attachment and the ground contact point.
+  * `SpringStiffness` – How strong the spring pushes back when compressed.
+  * `DamperCoefficient` – Amount of damping applied to stop bouncing.
+  * `RaycastLength` – How far down to look for the ground from each attachment.
+  * `WheelRadius` – Radius of the wheel or track roller used to offset the ray hit distance.
+  * `MaxForce` – Safety limit for the vertical suspension force per wheel.
+  * `AirDamping` – Optional force applied when a wheel is off the ground (set to `0` to disable).
+* `Traction`
+  * `LateralStiffness` – Resistance to sideways sliding.
+  * `LongitudinalStiffness` – Resistance to forward/back slipping.
+  * `RollingFriction` – Constant drag that keeps the tank from drifting forever.
+  * `MaxTractionForce` – Cap on the combined traction force per wheel.
+* `Drive`
+  * `MaxForwardSpeed` – Target top speed when driving forward.
+  * `MaxReverseSpeed` – Target top speed when reversing.
+  * `TurnRate` – How strongly steering input skews the left/right track speeds.
+  * `DriveForce` – Maximum drive force each wheel can apply when chasing the target speed.
+  * `BrakeForce` – Extra force used to slow the tank when the throttle is released or the handbrake is set.
+
+Play the game, sit in the DriverSeat, and tweak the numbers until the tank handles the way you want.

@@ -45,6 +45,32 @@ end
 
 local TankSuspension = require(resolveModule())
 
+-- Change these numbers to tune how the suspension feels.
+local SETTINGS = {
+    Suspension = {
+        RestLength = 2,
+        SpringStiffness = 12000,
+        DamperCoefficient = 2500,
+        RaycastLength = 4,
+        WheelRadius = 1.5,
+        MaxForce = 60000,
+        AirDamping = 0,
+    },
+    Traction = {
+        LateralStiffness = 6500,
+        LongitudinalStiffness = 5500,
+        RollingFriction = 350,
+        MaxTractionForce = 20000,
+    },
+    Drive = {
+        MaxForwardSpeed = 24,
+        MaxReverseSpeed = 12,
+        TurnRate = 0.5,
+        DriveForce = 12000,
+        BrakeForce = 16000,
+    },
+}
+
 local tankModel = script.Parent
 if not tankModel or not tankModel:IsA("Model") then
     error("TankController.server.lua must be parented under the tank Model")
@@ -55,7 +81,7 @@ if not driverSeat or not driverSeat:IsA("VehicleSeat") then
     error("Tank model is missing VehicleSeat 'DriverSeat'")
 end
 
-local controller = TankSuspension.new(tankModel)
+local controller = TankSuspension.new(tankModel, SETTINGS)
 controller:Bind()
 controller:SetHandBrake(true)
 controller:SetThrottle(0)
