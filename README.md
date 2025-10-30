@@ -1,95 +1,66 @@
 # Tank Suspension Roblox Scripts
 
-This repository contains Roblox Lua scripts and documentation for building a physically driven tank suspension system with per-wheel springs, dampers, and wheel constraints. The included module expects a very specific tank model hierarchy and naming convention; follow the setup instructions carefully before inserting the scripts into Studio.
+This project gives you two Roblox scripts:
 
-## Repository layout
+* `TankSuspension.lua` – the module that handles springs, dampers, and wheel motors.
+* `TankController.server.lua` – the script that reads the driver seat and talks to the module.
 
-| Path | Description |
-| --- | --- |
-| `src/TankSuspension.lua` | Core module that simulates suspension behavior, per-track drive logic, and wheel damping. |
-| `src/Server/TankController.server.lua` | Server script that connects a `VehicleSeat` to the `TankSuspension` module. |
+Follow the steps below in Roblox Studio to make the scripts work. Keep the names exactly the same so the code can find everything.
 
-## Building the tank model in Studio
+## 1. Build the tank model
+1. Create a **Model** named **Tank**. Set its `PrimaryPart` to the main body part (call it **Hull**).
+2. Add a **VehicleSeat** named **DriverSeat** and weld it to the Hull.
+3. Inside the Tank model create a **Folder** named **WheelAssemblies**. Each wheel assembly will go inside this folder.
 
-Create a `Model` named `Tank` and ensure its `PrimaryPart` is the hull. All parts should be welded (e.g. with `WeldConstraint`) so the chassis behaves as a single rigid body.
+## 2. Add hull attachments (repeat for every wheel)
+For each wheel you plan to add, make two attachments on the Hull:
 
-### Required root instances
+* `SuspensionMount_L1`, `SuspensionMount_R1`, `SuspensionMount_L2`, … (L = left, R = right, numbers go from front to back).
+* `DamperMount_L1`, `DamperMount_R1`, `DamperMount_L2`, … (match the same numbers as the suspension mounts).
 
-| Instance | Name | Notes |
+Place the attachments roughly above where the wheel should sit. Point their green arrow (the attachment axis) straight down.
+
+## 3. Create one wheel assembly
+Make a **Model** under `WheelAssemblies` called `WheelAssembly_L1` (copy it later for the other wheels). Inside that model add:
+
+1. **Part** named **Hub**. Add two attachments inside the Hub:
+   * `SpringAttachment` – where the spring connects.
+   * `DamperAttachment` – where the damper force connects.
+2. **Attachment** named **AxleAttachment** (parented to the Hub). Point its green arrow sideways, the same direction the wheel spins.
+3. **Part** named **Wheel**. Add an attachment inside it called `WheelAttachment` centred on the axle.
+4. **CylindricalConstraint** named **WheelConstraint** (parented to the Wheel). Set `Attachment0` to `Hub.AxleAttachment`, `Attachment1` to `Wheel.WheelAttachment`, and set `AngularActuatorType` to `Motor`.
+5. **SpringConstraint** named **SuspensionSpring**. Set `Attachment0` to the matching `Hull.SuspensionMount_L1` (or R1, etc.) and `Attachment1` to `Hub.SpringAttachment`.
+
+When the first wheel works, duplicate the wheel assembly model. Rename each copy to match its side and index (for example `WheelAssembly_R1`, `WheelAssembly_L2`, …) and update the spring’s `Attachment0` to use the matching hull attachment.
+
+## 4. Add attributes for tuning
+Every wheel assembly model (`WheelAssembly_L1`, etc.) needs these **Number** attributes. The values below are safe starting points:
+
+| Attribute | Example value | What it does |
 | --- | --- | --- |
-| `Part` | `Hull` | Primary chassis body. Set as `PrimaryPart` of the model. Add `Attachment`s described below. |
-| `VehicleSeat` | `DriverSeat` | Weld to the hull. Seat replication drives the throttle/steer inputs used by the script. |
-| `Folder` | `WheelAssemblies` | Holds all wheel models. |
+| `RestLength` | `2` | Length the spring wants to stay at.
+| `SpringStiffness` | `12000` | Strength of the spring.
+| `DamperCoefficient` | `2500` | How much the wheel resists bouncing.
+| `RaycastLength` | `3` | How far down to check for ground.
+| `WheelRadius` | `1.5` | Size of the wheel.
+| `DesignLoad` | `1500` | Weight the wheel should support.
 
-### Hull attachments (one pair per wheel)
+Set these **Number** attributes on the Tank model itself (change later if you like):
 
-Add these attachments to the `Hull` for every wheel. Replace `<Side>` with `L` or `R` and `<Index>` with a sequential number starting at 1 from front to back.
-
-| Attachment name | Purpose |
-| --- | --- |
-| `SuspensionMount_<Side><Index>` | Connection point for the wheel's `SpringConstraint` (`Attachment0`). The attachment's `Axis` should point downward along the suspension travel direction. |
-| `DamperMount_<Side><Index>` | Anchor for the scripted damping `VectorForce`. The attachment's `Axis` should also point downward. |
-
-Optionally, add `Attachment` `TrackForce_<Side>` on the hull if you want a visible reference for where track forces are applied; it is not required by the script.
-
-### Wheel assembly model structure
-
-Each child of `WheelAssemblies` must be a `Model` named `WheelAssembly_<Side><Index>` with the following contents:
-
-| Instance | Name | Notes |
+| Attribute | Default | Purpose |
 | --- | --- | --- |
-| `Part` | `Hub` | Acts as the bogey/swing arm. Add two attachments: `SpringAttachment` (for the spring) and `DamperAttachment` (for damping forces). Align the part so its local X-axis points outward from the hull. |
-| `Part` | `Wheel` | Visual/contact wheel geometry. Add attachment `WheelAttachment` centred on the axle. Set `CustomPhysicalProperties` with high `Friction` (≈1.8) and `FrictionWeight` ≥ 2 for good grip. |
-| `CylindricalConstraint` | `WheelConstraint` | Parent to the wheel model (e.g. under `Wheel`). Set `Attachment0` = `Hub.AxleAttachment` (see below) and `Attachment1` = `Wheel.WheelAttachment`. Set `AngularActuatorType` = `Motor`, `MotorMaxTorque` to a large value (e.g. 60000), and disable limits. |
-| `Attachment` | `AxleAttachment` | Parent to `Hub`. Align its axis (X axis) to match the wheel's rotation axis. Used by the wheel constraint. |
-| `SpringConstraint` | `SuspensionSpring` | Parent anywhere inside the wheel model. `Attachment0` = `Hull.SuspensionMount_<Side><Index>`, `Attachment1` = `Hub.SpringAttachment`. Configure `FreeLength`, `MinLength`, `MaxLength`, `Stiffness`, and `Damping` to approximate your desired ride characteristics. |
+| `MaxForwardSpeed` | `24` | Top speed going forward.
+| `MaxReverseSpeed` | `12` | Top speed going backward.
+| `TurnRate` | `0.5` | How sharply the tank can pivot.
+| `DriveTorque` | `65000` | Power given to each wheel.
+| `BrakeTorque` | `90000` | Force used when braking or empty.
+| `MaxDampingForce` | `80000` | Safety limit on damper force.
+| `AirDampingScale` | `0.2` | Damping when a wheel leaves the ground.
 
-> **Tip:** If you prefer separate visible damper geometry, add an extra `Part` inside the wheel assembly and weld it to `Hub`; only the attachments listed above are required for scripting.
+## 5. Install the scripts
+1. Copy **TankSuspension.lua** into a ModuleScript (for example `ServerScriptService/TankSuspension`).
+2. Copy **TankController.server.lua** into a Script parented to the Tank model.
+3. Open the controller script and set the `TankSuspensionModule` variable at the top if you put the module somewhere else.
+4. Press Play. If you see an error, read the message—it will usually tell you which attachment, attribute, or name is wrong.
 
-### Required attributes for each wheel assembly
-
-Add attributes to every `WheelAssembly_<Side><Index>` model:
-
-| Attribute | Type | Description |
-| --- | --- | --- |
-| `RestLength` | `Number` | The target spring length in studs (matches the `SuspensionSpring.FreeLength`). |
-| `SpringStiffness` | `Number` | Hooke stiffness (force per stud) applied to the spring. The script copies this into the constraint on startup. |
-| `DamperCoefficient` | `Number` | Damping coefficient applied by the scripted `VectorForce` pair (in force·seconds/stud). |
-| `RaycastLength` | `Number` | How far below the hull to raycast for ground contact. Typically `RestLength + 1`. |
-| `WheelRadius` | `Number` | Radius of the wheel in studs (used for converting linear speed to motor angular speed). |
-| `DesignLoad` | `Number` | Expected static load on the wheel in newtons. Used to scale drive torque and traction. |
-
-The script will error during initialization if any attribute is missing.
-
-### Model-level attributes
-
-Set these attributes on the `Tank` model to tune overall behaviour (defaults shown):
-
-| Attribute | Default | Meaning |
-| --- | --- | --- |
-| `MaxForwardSpeed` | `24` | Maximum forward track speed in studs/second. |
-| `MaxReverseSpeed` | `12` | Maximum reverse speed magnitude. |
-| `TurnRate` | `0.5` | Weighting factor for steering differential (1 = pivot turn, 0 = tank cannot steer). |
-| `DriveTorque` | `65000` | Baseline motor torque (N·stud) given to each wheel. |
-| `BrakeTorque` | `90000` | Torque applied when the handbrake engages or no driver occupies the seat. |
-| `MaxDampingForce` | `80000` | Clamp applied to each damper force to keep the solver stable. |
-| `AirDampingScale` | `0.2` | Scale applied to damper force when a wheel is airborne. |
-
-### Ground detection and traction
-
-The module uses per-wheel raycasts originating from each `SuspensionSpring.Attachment0` along the attachment's negative axis. Ensure no other parts of the tank extend into this ray path or the vehicle may think it is grounded while airborne. You can customise the collision filtering by editing the script's `RaycastParams` if necessary.
-
-## Script installation
-
-1. Copy `src/TankSuspension.lua` into a ModuleScript (for example `ServerScriptService/TankSuspension`).
-2. Copy `src/Server/TankController.server.lua` into a Script parented to your `Tank` model.
-3. Set the script's `TankSuspensionModule` reference if you move the module (see the comment at the top of the server script).
-4. Enter Play mode to let the script wire up the suspension. Errors about missing attachments, attributes, or constraints point to mismatches with the naming scheme above.
-
-## Extending the system
-
-* Add your own input mapping by calling `SetThrottle`, `SetSteer`, and `SetHandBrake` on the returned controller.
-* You can author different wheel groups (e.g. return rollers) by tagging the assemblies and filtering them before handing to the module.
-* Consider adding track visual meshes driven by the wheel angular speed for extra polish.
-
-Refer to the inline documentation in the scripts for additional guidance on tuning values.
+That’s it! Adjust the numbers until the tank feels right for your game.
