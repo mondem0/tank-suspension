@@ -2,11 +2,16 @@
 --[[
     TankSuspension.lua
     -------------------
-    Raycast-based tank suspension and traction controller. Each wheel is defined by a
-    single Attachment on the hull. The module casts a ray from the attachment toward the
-    ground, applies a spring/damper force that rebalances itself against the tank's mass,
-    and adds planar forces for traction and steering. All tuning happens through the
-    settings table passed into `new` or by editing the defaults below.
+    Completely raycast-driven tank suspension that only requires wheel
+    attachments on the hull. Each frame the module casts a ray beneath every
+    attachment, builds a spring force aligned to the ground normal, and applies
+    traction through a second VectorForce that pushes at the centre of mass.
+
+    The implementation focuses on stability when the vehicle mass changes (for
+    example when a driver enters the seat) by smoothing the mass estimate and
+    separating vertical support from planar drive forces. Attachments can keep
+    their existing orientation – the script reads their axes so you can reuse
+    rigs built with other suspension setups.
 
     Usage:
         local TankSuspension = require(path.to.TankSuspension)
@@ -16,7 +21,8 @@
         controller:SetSteer(-0.25)
         controller:SetHandBrake(false)
 
-    See README.md for the required attachment names and how to orient them.
+    See README.md for the required attachment naming conventions and available
+    tuning parameters.
 ]]
 
 local RunService = game:GetService("RunService")
@@ -25,20 +31,22 @@ local Workspace = game:GetService("Workspace")
 export type SuspensionSettings = {
     RestLength: number,
     SpringStiffness: number,
-    DampingRatio: number,
-    Preload: number,
+    Damping: number,
+    PreloadForce: number,
     RaycastLength: number,
     WheelRadius: number,
     MaxForceMultiplier: number,
     AntiRollStiffness: number,
+    MassSmoothing: number,
     AirDamping: number,
+    UseAttachmentUp: boolean?,
 }
 
 export type TractionSettings = {
-    LateralStiffness: number,
     LongitudinalStiffness: number,
+    LateralStiffness: number,
     RollingDrag: number,
-    MaxPlanarForceMultiplier: number,
+    GripCoefficient: number,
 }
 
 export type DriveSettings = {
@@ -46,7 +54,8 @@ export type DriveSettings = {
     MaxReverseSpeed: number,
     TurnRate: number,
     DriveForce: number,
-    BrakeForce: number,
+    IdleBrakeForce: number,
+    HandBrakeForce: number,
 }
 
 export type TankSettings = {
@@ -60,10 +69,13 @@ export type WheelConfig = {
     side: string,
     index: number,
     attachment: Attachment,
-    force: VectorForce,
+    suspensionForce: VectorForce,
+    tractionForce: VectorForce,
+    rayDirection: Vector3,
+    forwardHint: Vector3,
+    lateralHint: Vector3,
     command: number,
-    compression: number,
-    inContact: boolean,
+    lastLength: number,
 }
 
 export type TankSuspension = {
@@ -78,6 +90,7 @@ export type TankSuspension = {
     _connection: RBXScriptConnection?,
     _destroyed: boolean,
     _pairs: {[number]: {L: WheelConfig?, R: WheelConfig?}},
+    _smoothedMass: number,
 }
 
 local TankSuspension = {}
@@ -85,28 +98,31 @@ TankSuspension.__index = TankSuspension
 
 local DEFAULT_SETTINGS: TankSettings = {
     Suspension = {
-        RestLength = 2,
-        SpringStiffness = 30000,
-        DampingRatio = 1.15,
-        Preload = 0.2,
+        RestLength = 1.8,
+        SpringStiffness = 28000,
+        Damping = 4200,
+        PreloadForce = 2200,
         RaycastLength = 5,
-        WheelRadius = 1.5,
-        MaxForceMultiplier = 2.6,
-        AntiRollStiffness = 3500,
-        AirDamping = 1200,
+        WheelRadius = 1.2,
+        MaxForceMultiplier = 3,
+        AntiRollStiffness = 4200,
+        MassSmoothing = 6,
+        AirDamping = 450,
+        UseAttachmentUp = true,
     },
     Traction = {
-        LateralStiffness = 2200,
-        LongitudinalStiffness = 1800,
-        RollingDrag = 140,
-        MaxPlanarForceMultiplier = 1.15,
+        LongitudinalStiffness = 2400,
+        LateralStiffness = 3100,
+        RollingDrag = 160,
+        GripCoefficient = 1.1,
     },
     Drive = {
-        MaxForwardSpeed = 24,
-        MaxReverseSpeed = 12,
-        TurnRate = 0.45,
+        MaxForwardSpeed = 22,
+        MaxReverseSpeed = 10,
+        TurnRate = 0.4,
         DriveForce = 11000,
-        BrakeForce = 16000,
+        IdleBrakeForce = 3200,
+        HandBrakeForce = 18000,
     },
 }
 
@@ -164,7 +180,7 @@ local function extractWheelPlacement(attachment: Attachment): (string?, number?)
         side = normalizeSide(attrSide)
         local parsedIndex = tonumber(attrIndex)
         if parsedIndex then
-            index = math.floor(parsedIndex + 0.5)
+            index = math.max(1, math.floor(parsedIndex + 0.5))
         end
     end
 
@@ -200,13 +216,14 @@ local function buildRaycastParams(model: Model): RaycastParams
     return params
 end
 
-local function createForce(attachment: Attachment): VectorForce
+local function createForce(attachment: Attachment, suffix: string, applyAtCenter: boolean): VectorForce
     local force = Instance.new("VectorForce")
-    force.Name = attachment.Name .. "_Force"
+    force.Name = attachment.Name .. suffix
     force.Attachment0 = attachment
     force.RelativeTo = Enum.ActuatorRelativeTo.World
-    force.ApplyAtCenterOfMass = false
+    force.ApplyAtCenterOfMass = applyAtCenter
     force.Force = Vector3.zero
+    force.Enabled = false
     force.Parent = attachment.Parent
     return force
 end
@@ -218,10 +235,29 @@ local function compareWheels(a: WheelConfig, b: WheelConfig): boolean
     return a.side < b.side
 end
 
+local function sign(value: number): number
+    if value > 0 then
+        return 1
+    elseif value < 0 then
+        return -1
+    end
+    return 0
+end
+
+local function resolveDirectionVector(base: Vector3, fallback: Vector3): Vector3
+    if base.Magnitude < 1e-4 then
+        return fallback.Unit
+    end
+    return base.Unit
+end
+
 function TankSuspension.new(model: Model, overrides: TankSettings?): TankSuspension
     local hull = expectPrimaryPart(model)
     local settings = cloneTable(DEFAULT_SETTINGS)
     mergeTables(settings, overrides)
+
+    local suspensionSettings = settings.Suspension
+    local useAttachmentUp = suspensionSettings.UseAttachmentUp ~= false
 
     local attachments: {Attachment} = {}
     for _, child in ipairs(hull:GetChildren()) do
@@ -236,6 +272,7 @@ function TankSuspension.new(model: Model, overrides: TankSettings?): TankSuspens
 
     local wheels: {WheelConfig} = {}
     local seen: {[string]: boolean} = {}
+
     for _, attachment in ipairs(attachments) do
         local side, index = extractWheelPlacement(attachment)
         if side and index then
@@ -244,16 +281,32 @@ function TankSuspension.new(model: Model, overrides: TankSettings?): TankSuspens
                 warn(string.format("Duplicate wheel placement detected for side %s index %d at attachment %s.%s. Only the first attachment with that combination will be used.", side, index, attachment.Parent:GetFullName(), attachment.Name))
             else
                 seen[key] = true
-                local force = createForce(attachment)
+
+                local attachmentCFrame = attachment.WorldCFrame
+                local hullCFrame = hull.CFrame
+                local downDirection = useAttachmentUp and -attachmentCFrame.UpVector or -hullCFrame.UpVector
+                local forwardHint = attachmentCFrame.LookVector
+                local lateralHint = attachmentCFrame.RightVector
+
+                downDirection = resolveDirectionVector(downDirection, -hullCFrame.UpVector)
+                forwardHint = resolveDirectionVector(forwardHint, hullCFrame.LookVector)
+                lateralHint = resolveDirectionVector(lateralHint, hullCFrame.RightVector)
+
+                local suspensionForce = createForce(attachment, "_SuspensionForce", false)
+                local tractionForce = createForce(attachment, "_TractionForce", true)
+
                 table.insert(wheels, {
                     name = attachment.Name,
                     side = side,
                     index = index,
                     attachment = attachment,
-                    force = force,
+                    suspensionForce = suspensionForce,
+                    tractionForce = tractionForce,
+                    rayDirection = downDirection,
+                    forwardHint = forwardHint,
+                    lateralHint = lateralHint,
                     command = 0,
-                    compression = 0,
-                    inContact = false,
+                    lastLength = suspensionSettings.RestLength,
                 })
             end
         else
@@ -289,26 +342,27 @@ function TankSuspension.new(model: Model, overrides: TankSettings?): TankSuspens
         _connection = nil,
         _destroyed = false,
         _pairs = pairsByIndex,
+        _smoothedMass = hull.AssemblyMass,
     }, TankSuspension)
 
     return self
 end
 
-local function clamp01(value: number): number
-    if value < -1 then
-        return -1
-    elseif value > 1 then
+local function clampCommand(value: number): number
+    if value > 1 then
         return 1
+    elseif value < -1 then
+        return -1
     end
     return value
 end
 
 function TankSuspension:SetThrottle(value: number)
-    self.throttle = clamp01(value)
+    self.throttle = clampCommand(value)
 end
 
 function TankSuspension:SetSteer(value: number)
-    self.steer = clamp01(value)
+    self.steer = clampCommand(value)
 end
 
 function TankSuspension:SetHandBrake(enabled: boolean)
@@ -341,7 +395,8 @@ function TankSuspension:Destroy()
     self:Unbind()
 
     for _, wheel in ipairs(self.Wheels) do
-        wheel.force:Destroy()
+        wheel.suspensionForce:Destroy()
+        wheel.tractionForce:Destroy()
     end
 
     table.clear(self.Wheels)
@@ -354,30 +409,90 @@ local function computeCommand(throttle: number, steer: number, turnRate: number)
     return left, right
 end
 
-local function sign(value: number): number
-    if value > 0 then
-        return 1
-    elseif value < 0 then
-        return -1
+local function blend(previous: number, target: number, rate: number, dt: number): number
+    if rate <= 0 then
+        return target
     end
-    return 0
+    local alpha = math.clamp(dt * rate, 0, 1)
+    return previous + (target - previous) * alpha
 end
 
-local function applyAirDamping(hull: BasePart, wheel: WheelConfig, settings: TankSettings)
-    local damping = settings.Suspension.AirDamping
-    if damping <= 0 then
-        wheel.force.Force = Vector3.zero
-        wheel.force.Enabled = false
-        wheel.inContact = false
-        wheel.compression = 0
-        return
+local function computePlanarForces(
+    hull: BasePart,
+    wheel: WheelConfig,
+    normal: Vector3,
+    contactPoint: Vector3,
+    forwardCommand: number,
+    settings: TankSettings,
+    verticalForce: number,
+    handBrake: boolean
+): Vector3
+    local traction = settings.Traction
+    local drive = settings.Drive
+
+    local forwardAxis = wheel.forwardHint - normal * wheel.forwardHint:Dot(normal)
+    if forwardAxis.Magnitude < 1e-4 then
+        forwardAxis = hull.CFrame.LookVector - normal * hull.CFrame.LookVector:Dot(normal)
+    end
+    if forwardAxis.Magnitude < 1e-4 then
+        forwardAxis = normal:Cross(hull.CFrame.RightVector)
+    end
+    forwardAxis = forwardAxis.Unit
+
+    local lateralAxis = wheel.lateralHint - normal * wheel.lateralHint:Dot(normal)
+    if lateralAxis.Magnitude < 1e-4 then
+        lateralAxis = normal:Cross(forwardAxis)
+    end
+    if lateralAxis.Magnitude < 1e-4 then
+        lateralAxis = hull.CFrame.RightVector - normal * hull.CFrame.RightVector:Dot(normal)
+    end
+    lateralAxis = lateralAxis.Unit
+
+    local velocity = hull:GetVelocityAtPosition(contactPoint)
+    local forwardSpeed = velocity:Dot(forwardAxis)
+    local lateralSpeed = velocity:Dot(lateralAxis)
+
+    local maxSpeed = forwardCommand >= 0 and drive.MaxForwardSpeed or drive.MaxReverseSpeed
+    local desiredSpeed = handBrake and 0 or forwardCommand * maxSpeed
+    local speedError = desiredSpeed - forwardSpeed
+    local driveForce = math.clamp(speedError * drive.DriveForce, -drive.DriveForce, drive.DriveForce)
+
+    local planar = forwardAxis * driveForce
+    planar -= forwardAxis * (forwardSpeed * traction.LongitudinalStiffness)
+    planar -= lateralAxis * (lateralSpeed * traction.LateralStiffness)
+
+    if traction.RollingDrag > 0 and math.abs(forwardSpeed) > 0.1 then
+        planar -= forwardAxis * (sign(forwardSpeed) * traction.RollingDrag)
     end
 
-    local velocity = hull:GetVelocityAtPosition(wheel.attachment.WorldPosition)
-    wheel.force.Force = -velocity * damping
-    wheel.force.Enabled = true
-    wheel.inContact = false
-    wheel.compression = 0
+    if handBrake then
+        planar -= forwardAxis * (forwardSpeed * drive.HandBrakeForce)
+    elseif math.abs(forwardCommand) < 0.05 then
+        planar -= forwardAxis * (forwardSpeed * drive.IdleBrakeForce)
+    end
+
+    local gripLimit = math.max(verticalForce * traction.GripCoefficient, 0)
+    if planar.Magnitude > gripLimit and gripLimit > 0 then
+        planar = planar.Unit * gripLimit
+    end
+
+    return planar
+end
+
+local function applyAirResponse(hull: BasePart, wheel: WheelConfig, suspension: SuspensionSettings)
+    wheel.command = 0
+    wheel.lastLength = suspension.RaycastLength
+    wheel.suspensionForce.Force = Vector3.zero
+    wheel.suspensionForce.Enabled = false
+
+    if suspension.AirDamping > 0 then
+        local velocity = hull:GetVelocityAtPosition(wheel.attachment.WorldPosition)
+        wheel.tractionForce.Force = -velocity * suspension.AirDamping
+        wheel.tractionForce.Enabled = true
+    else
+        wheel.tractionForce.Force = Vector3.zero
+        wheel.tractionForce.Enabled = false
+    end
 end
 
 function TankSuspension:_step(dt: number)
@@ -389,143 +504,66 @@ function TankSuspension:_step(dt: number)
         dt = 1 / 60
     end
 
-    local settings = self.Settings
-    local suspension = settings.Suspension
-    local traction = settings.Traction
-    local driveSettings = settings.Drive
-
     local wheelCount = #self.Wheels
     if wheelCount == 0 then
         return
     end
 
-    local leftCommand, rightCommand = computeCommand(self.handBrake and 0 or self.throttle, self.steer, driveSettings.TurnRate)
-
+    local settings = self.Settings
+    local suspension = settings.Suspension
     local hull = self.Hull
-    local hullCFrame = hull.CFrame
-    local up = hullCFrame.UpVector
-    local down = -up
-    local forward = hullCFrame.LookVector
-    local right = hullCFrame.RightVector
+
+    local mass = hull.AssemblyMass
+    self._smoothedMass = blend(self._smoothedMass, mass, suspension.MassSmoothing, dt)
 
     local gravity = Workspace.Gravity
-    local totalMass = hull.AssemblyMass
-    local massPerWheel = totalMass / wheelCount
+    local massPerWheel = self._smoothedMass / wheelCount
     local weightPerWheel = massPerWheel * gravity
-    local preloadCompression = math.clamp(suspension.Preload, 0, suspension.RestLength)
-    local stiffness = math.max(suspension.SpringStiffness, 0)
-    local criticalDamping = 0
-    if stiffness > 0 then
-        criticalDamping = 2 * math.sqrt(stiffness * massPerWheel)
-    end
-    local damperCoefficient = criticalDamping * suspension.DampingRatio
-    local maxVerticalForce = weightPerWheel * suspension.MaxForceMultiplier
-    local maxPlanarForce = weightPerWheel * traction.MaxPlanarForceMultiplier
+    local maxVerticalForce = math.max(weightPerWheel * suspension.MaxForceMultiplier, 0)
 
-    local wheelResults: {[WheelConfig]: {vertical: number, planar: Vector3, compression: number, contact: boolean, normal: Vector3?}} = {}
+    local leftCommand, rightCommand = computeCommand(self.handBrake and 0 or self.throttle, self.steer, settings.Drive.TurnRate)
+
+    local wheelResults: {[WheelConfig]: {vertical: number, planar: Vector3, compression: number, normal: Vector3}} = {}
 
     for _, wheel in ipairs(self.Wheels) do
         wheel.command = wheel.side == "L" and leftCommand or rightCommand
 
         local attachment = wheel.attachment
         local origin = attachment.WorldPosition
-        local rayDirection = down * suspension.RaycastLength
+        local rayDirection = wheel.rayDirection * suspension.RaycastLength
         local result = Workspace:Raycast(origin, rayDirection, self._raycastParams)
 
         if result then
             local normal = result.Normal.Unit
-            local distance = result.Distance - suspension.WheelRadius
-            local suspensionLength = math.max(distance, 0)
-            local compression = math.max(suspension.RestLength - suspensionLength, 0)
+            local rawLength = math.max(result.Distance - suspension.WheelRadius, 0)
+            local restLength = suspension.RestLength
+            local compression = math.clamp(restLength - rawLength, 0, restLength)
+            local suspensionVelocity = (wheel.lastLength - rawLength) / dt
+            wheel.lastLength = rawLength
 
-            local relativeVelocity = hull:GetVelocityAtPosition(result.Position)
-            if result.Instance and result.Instance:IsA("BasePart") then
-                relativeVelocity -= result.Instance:GetVelocityAtPosition(result.Position)
-            end
+            local springForce = compression * suspension.SpringStiffness + suspension.PreloadForce
+            local dampingForce = suspensionVelocity * suspension.Damping
+            local verticalForce = math.clamp(springForce + dampingForce, 0, maxVerticalForce)
 
-            local normalSpeed = relativeVelocity:Dot(normal)
-            local springForce = (compression + preloadCompression) * stiffness
-            if springForce < 0 then
-                springForce = 0
-            end
-            local dampingForce = -normalSpeed * damperCoefficient
-            local verticalForceMag = math.clamp(springForce + dampingForce, 0, maxVerticalForce)
-
-            local forwardAxis = forward - normal * forward:Dot(normal)
-            if forwardAxis.Magnitude < 1e-4 then
-                forwardAxis = right - normal * right:Dot(normal)
-            end
-            if forwardAxis.Magnitude < 1e-4 then
-                forwardAxis = normal:Cross(right)
-            end
-            if forwardAxis.Magnitude < 1e-4 then
-                forwardAxis = Vector3.new(0, 0, 1)
-                if math.abs(forwardAxis:Dot(normal)) > 0.99 then
-                    forwardAxis = Vector3.new(1, 0, 0)
-                end
-            end
-            forwardAxis = forwardAxis.Unit
-
-            local lateralAxis = normal:Cross(forwardAxis)
-            if lateralAxis.Magnitude < 1e-4 then
-                lateralAxis = right - normal * right:Dot(normal)
-            end
-            if lateralAxis.Magnitude < 1e-4 then
-                lateralAxis = Vector3.new(1, 0, 0)
-                if math.abs(lateralAxis:Dot(normal)) > 0.99 then
-                    lateralAxis = Vector3.new(0, 0, 1)
-                end
-            end
-            lateralAxis = lateralAxis.Unit
-
-            local forwardSpeed = relativeVelocity:Dot(forwardAxis)
-            local lateralSpeed = relativeVelocity:Dot(lateralAxis)
-
-            local driveForce = 0
-            if self.handBrake then
-                driveForce = math.clamp(-forwardSpeed * driveSettings.BrakeForce, -driveSettings.BrakeForce, driveSettings.BrakeForce)
-            else
-                local command = wheel.command
-                local maxSpeed = command >= 0 and driveSettings.MaxForwardSpeed or driveSettings.MaxReverseSpeed
-                local desiredSpeed = command * maxSpeed
-                local speedError = desiredSpeed - forwardSpeed
-                driveForce = math.clamp(speedError * driveSettings.DriveForce, -driveSettings.DriveForce, driveSettings.DriveForce)
-                if math.abs(command) < 0.05 then
-                    local braking = math.clamp(-forwardSpeed * driveSettings.BrakeForce, -driveSettings.BrakeForce, driveSettings.BrakeForce)
-                    driveForce += braking
-                end
-            end
-
-            local planar = forwardAxis * driveForce
-            planar -= forwardAxis * (forwardSpeed * traction.LongitudinalStiffness)
-            planar -= lateralAxis * (lateralSpeed * traction.LateralStiffness)
-            if math.abs(forwardSpeed) > 0.25 then
-                planar -= forwardAxis * (sign(forwardSpeed) * traction.RollingDrag)
-            end
-
-            local compressionRatio = suspension.RestLength > 0 and compression / suspension.RestLength or 0
-            compressionRatio = math.clamp(compressionRatio, 0, 1)
-            planar *= compressionRatio
-
-            if planar.Magnitude > maxPlanarForce then
-                planar = planar.Unit * maxPlanarForce
-            end
+            local planarForce = computePlanarForces(
+                hull,
+                wheel,
+                normal,
+                result.Position,
+                wheel.command,
+                settings,
+                verticalForce,
+                self.handBrake
+            )
 
             wheelResults[wheel] = {
-                vertical = verticalForceMag,
-                planar = planar,
+                vertical = verticalForce,
+                planar = planarForce,
                 compression = compression,
-                contact = true,
                 normal = normal,
             }
         else
-            applyAirDamping(hull, wheel, settings)
-            wheelResults[wheel] = {
-                vertical = 0,
-                planar = Vector3.zero,
-                compression = 0,
-                contact = false,
-            }
+            applyAirResponse(hull, wheel, suspension)
         end
     end
 
@@ -536,7 +574,7 @@ function TankSuspension:_step(dt: number)
             if leftWheel and rightWheel then
                 local leftResult = wheelResults[leftWheel]
                 local rightResult = wheelResults[rightWheel]
-                if leftResult and rightResult and leftResult.contact and rightResult.contact then
+                if leftResult and rightResult then
                     local diff = leftResult.compression - rightResult.compression
                     local rollForce = diff * suspension.AntiRollStiffness
                     leftResult.vertical = math.clamp(leftResult.vertical - rollForce, 0, maxVerticalForce)
@@ -549,21 +587,18 @@ function TankSuspension:_step(dt: number)
     for _, wheel in ipairs(self.Wheels) do
         local result = wheelResults[wheel]
         if result then
-            if result.contact then
-                local verticalAxis = result.normal or hull.CFrame.UpVector
-                wheel.force.Force = verticalAxis * result.vertical + result.planar
-                wheel.force.Enabled = true
-                wheel.inContact = true
-                if suspension.RestLength > 0 then
-                    wheel.compression = result.compression / suspension.RestLength
-                else
-                    wheel.compression = 0
-                end
+            wheel.suspensionForce.Force = result.normal * result.vertical
+            wheel.suspensionForce.Enabled = result.vertical > 0
+
+            if result.planar.Magnitude > 1e-3 then
+                wheel.tractionForce.Force = result.planar
+                wheel.tractionForce.Enabled = true
             else
-                applyAirDamping(hull, wheel, settings)
+                wheel.tractionForce.Force = Vector3.zero
+                wheel.tractionForce.Enabled = false
             end
         else
-            applyAirDamping(hull, wheel, settings)
+            applyAirResponse(hull, wheel, suspension)
         end
     end
 end
