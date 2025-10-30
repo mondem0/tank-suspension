@@ -5,7 +5,7 @@ This project gives you two Roblox scripts:
 * `TankSuspension.lua` – a raycast suspension module that applies springs, dampers, and traction forces at each wheel attachment.
 * `TankController.server.lua` – a helper script that reads a `VehicleSeat` and feeds the input into the suspension module.
 
-Follow the steps below to set everything up. No wheel constraints or springs are needed—just attachments that mark where the wheels go.
+Follow the steps below to set everything up. No wheel constraints or springs are needed—just attachments that mark where the wheels go. The script measures the tank’s mass every frame, so it stays planted even when a driver hops in.
 
 ## 1. Prepare the tank model
 1. Create a **Model** named **Tank** and set its `PrimaryPart` to the main body part (call it **Hull**).
@@ -33,18 +33,20 @@ The physics only need the attachments, but you can still add wheel meshes or par
 Each section of the `SETTINGS` table controls a part of the simulation:
 
 * `Suspension`
-  * `RestLength` – Distance (in studs) the spring wants to keep between the attachment and the ground contact point.
-  * `SpringStiffness` – How strong the spring pushes back when compressed.
-  * `DamperCoefficient` – Amount of damping applied to stop bouncing.
+  * `RestLength` – Target distance (in studs) from each attachment to the ground contact point.
+  * `SpringStiffness` – Strength of the spring when it compresses beyond the natural ride height.
+  * `DampingRatio` – Multiplier applied to critical damping; raise it to kill oscillations, lower it for a softer response.
+  * `Preload` – Extra compression (in studs) added to each spring so the tank settles without slamming to the stops.
   * `RaycastLength` – How far down to look for the ground from each attachment.
-  * `WheelRadius` – Radius of the wheel or track roller used to offset the ray hit distance.
-  * `MaxForce` – Safety limit for the vertical suspension force per wheel.
-  * `AirDamping` – Optional force applied when a wheel is off the ground (set to `0` to disable).
+  * `WheelRadius` – Radius of the wheel or roller. The raycast hit distance is offset by this amount.
+  * `MaxForceMultiplier` – Scales the maximum vertical force relative to the tank’s weight per wheel. Keep it above `1` so the springs can hold the tank up even when landing.
+  * `AntiRollStiffness` – Balances left/right compression to resist body roll. Set to `0` to disable.
+  * `AirDamping` – Optional world-space damping when a wheel is off the ground. Set to `0` to disable.
 * `Traction`
-  * `LateralStiffness` – Resistance to sideways sliding.
-  * `LongitudinalStiffness` – Resistance to forward/back slipping.
-  * `RollingFriction` – Constant drag that keeps the tank from drifting forever.
-  * `MaxTractionForce` – Cap on the combined traction force per wheel.
+  * `LateralStiffness` – Resistance to sideways sliding on the contact patch.
+  * `LongitudinalStiffness` – Resistance to forward/back slipping when no throttle is applied.
+  * `RollingDrag` – Constant drag that bleeds off speed so the tank coasts to a stop.
+  * `MaxPlanarForceMultiplier` – Caps the combined traction force based on the wheel’s share of the tank weight.
 * `Drive`
   * `MaxForwardSpeed` – Target top speed when driving forward.
   * `MaxReverseSpeed` – Target top speed when reversing.
@@ -53,3 +55,5 @@ Each section of the `SETTINGS` table controls a part of the simulation:
   * `BrakeForce` – Extra force used to slow the tank when the throttle is released or the handbrake is set.
 
 Play the game, sit in the DriverSeat, and tweak the numbers until the tank handles the way you want.
+
+The suspension automatically recalculates the tank’s weight distribution every frame, so the same settings stay stable whether the hull is empty, carrying cargo, or supporting a seated driver.
