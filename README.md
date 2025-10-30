@@ -14,8 +14,7 @@ Follow the steps below to set everything up. No wheel constraints or springs are
 ## 2. Place the wheel attachments
 1. Inside the Hull, insert an **Attachment** for every wheel location.
 2. Name them `Wheel_L1`, `Wheel_R1`, `Wheel_L2`, `Wheel_R2`, and so on. Use `L` for the tank's left side and `R` for the right; increase the numbers from front to back.
-3. Move each attachment to the spot where the wheel should contact the ground.
-4. Rotate the attachment so its green arrow (the attachment's up axis) points straight down toward the ground and the red arrow points toward the front of the tank. The script uses this orientation to know which way is up, forward, and sideways.
+3. Move each attachment to the spot where the wheel should contact the ground. The script reads the tank body's orientation, so you do **not** have to rotate the attachments in any special way.
 
 You can duplicate the first attachment to create the others—just rename each copy to match its side and index.
 

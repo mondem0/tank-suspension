@@ -343,12 +343,17 @@ function TankSuspension:_step()
     local settings = self.Settings
     local leftCommand, rightCommand = computeCommand(self.handBrake and 0 or self.throttle, self.steer, settings.Drive.TurnRate)
 
+    local hull = self.Hull
+    local hullCFrame = hull.CFrame
+    local up = hullCFrame.UpVector
+    local down = -up
+    local forward = hullCFrame.LookVector
+    local right = hullCFrame.RightVector
+
     for _, wheel in ipairs(self.Wheels) do
         wheel.command = wheel.side == "L" and leftCommand or rightCommand
 
         local attachment = wheel.attachment
-        local up = attachment.WorldCFrame.UpVector
-        local down = -up
         local origin = attachment.WorldPosition
         local rayDirection = down * settings.Suspension.RaycastLength
         local result = Workspace:Raycast(origin, rayDirection, self._raycastParams)
@@ -357,13 +362,11 @@ function TankSuspension:_step()
             local distance = result.Distance - settings.Suspension.WheelRadius
             local suspensionLength = math.max(distance, 0)
             local compression = math.clamp(settings.Suspension.RestLength - suspensionLength, 0, settings.Suspension.RestLength)
-            local velocity = self.Hull:GetVelocityAtPosition(origin)
+            local velocity = hull:GetVelocityAtPosition(origin)
             local verticalSpeed = velocity:Dot(down)
             local verticalForceMag = springForce(settings.Suspension, compression, verticalSpeed)
             local verticalForce = up * verticalForceMag
 
-            local forward = attachment.WorldCFrame.LookVector
-            local right = attachment.WorldCFrame.RightVector
             local forwardSpeed = velocity:Dot(forward)
             local lateralSpeed = velocity:Dot(right)
 
@@ -390,7 +393,7 @@ function TankSuspension:_step()
                 wheel.compression = 0
             end
         else
-            applyAirDamping(self.Hull, wheel, settings)
+            applyAirDamping(hull, wheel, settings)
         end
     end
 end
