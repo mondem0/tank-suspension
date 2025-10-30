@@ -133,12 +133,50 @@ local function mergeTables(into: any, overrides: any)
     return into
 end
 
-local function parseWheelName(name: string): (string, number)
-    local side, index = string.match(name, "^Wheel_([LR])(%d+)$")
-    if not side or not index then
-        error(string.format("Wheel attachment '%s' must be named 'Wheel_<Side><Index>' (for example Wheel_L1)", name), 2)
+local function normalizeSide(value: string?): string?
+    if not value then
+        return nil
     end
-    return side, tonumber(index)
+
+    local lower = string.lower(value)
+    if lower == "l" or lower == "left" then
+        return "L"
+    elseif lower == "r" or lower == "right" then
+        return "R"
+    end
+
+    return nil
+end
+
+local function extractWheelPlacement(attachment: Attachment): (string?, number?)
+    local attrSide = attachment:GetAttribute("WheelSide")
+    local attrIndex = attachment:GetAttribute("WheelIndex")
+
+    local side = nil
+    local index = nil
+
+    if typeof(attrSide) == "string" and (typeof(attrIndex) == "number" or typeof(attrIndex) == "string") then
+        side = normalizeSide(attrSide)
+        local parsedIndex = tonumber(attrIndex)
+        if parsedIndex then
+            index = math.floor(parsedIndex + 0.5)
+        end
+    end
+
+    if not side or not index then
+        local name = attachment.Name
+        local sideToken, numberToken = string.match(name, "([LRlr])%D*(%d+)")
+        if sideToken and numberToken then
+            side = normalizeSide(sideToken)
+            index = tonumber(numberToken)
+        end
+    end
+
+    if side and index and index > 0 then
+        return side, index
+    end
+
+    return nil, nil
 end
 
 local function expectPrimaryPart(model: Model): BasePart
@@ -183,33 +221,46 @@ function TankSuspension.new(model: Model, overrides: TankSettings?): TankSuspens
     local attachments: {Attachment} = {}
     for _, child in ipairs(hull:GetChildren()) do
         if child:IsA("Attachment") then
-            if string.match(child.Name, "^Wheel_[LR]%d+$") then
-                table.insert(attachments, child)
-            end
+            table.insert(attachments, child)
         end
     end
 
     if #attachments == 0 then
-        error(string.format("No wheel attachments found on %s. Add attachments named 'Wheel_L1', 'Wheel_R1', etc.", hull:GetFullName()), 2)
+        error(string.format("No attachments found on %s. Add attachments where the wheels should connect to the hull.", hull:GetFullName()), 2)
     end
 
     local wheels: {WheelConfig} = {}
+    local seen: {[string]: boolean} = {}
     for _, attachment in ipairs(attachments) do
-        local side, index = parseWheelName(attachment.Name)
-        local force = createForce(attachment)
-        table.insert(wheels, {
-            name = attachment.Name,
-            side = side,
-            index = index,
-            attachment = attachment,
-            force = force,
-            command = 0,
-            compression = 0,
-            inContact = false,
-        })
+        local side, index = extractWheelPlacement(attachment)
+        if side and index then
+            local key = side .. tostring(index)
+            if seen[key] then
+                warn(string.format("Duplicate wheel placement detected for side %s index %d at attachment %s.%s. Only the first attachment with that combination will be used.", side, index, attachment.Parent:GetFullName(), attachment.Name))
+            else
+                seen[key] = true
+                local force = createForce(attachment)
+                table.insert(wheels, {
+                    name = attachment.Name,
+                    side = side,
+                    index = index,
+                    attachment = attachment,
+                    force = force,
+                    command = 0,
+                    compression = 0,
+                    inContact = false,
+                })
+            end
+        else
+            warn(string.format("Ignoring attachment %s.%s – unable to determine wheel side/index. Set WheelSide/WheelIndex attributes or include L/R and a number in the name.", attachment.Parent:GetFullName(), attachment.Name))
+        end
     end
 
     table.sort(wheels, compareWheels)
+
+    if #wheels == 0 then
+        error(string.format("No wheel attachments detected on %s. Add attachments with WheelSide/WheelIndex attributes or include 'L'/'R' and an index in their names.", hull:GetFullName()), 2)
+    end
 
     local self: TankSuspension = setmetatable({
         Model = model,

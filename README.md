@@ -13,10 +13,12 @@ Follow the steps below to set everything up. No wheel constraints or springs are
 
 ## 2. Place the wheel attachments
 1. Inside the Hull, insert an **Attachment** for every wheel location.
-2. Name them `Wheel_L1`, `Wheel_R1`, `Wheel_L2`, `Wheel_R2`, and so on. Use `L` for the tank's left side and `R` for the right; increase the numbers from front to back.
+2. Either:
+   * Keep your existing attachments and set two attributes on each one: `WheelSide` (`"Left"`/`"Right"`) and `WheelIndex` (`1`, `2`, ...), **or**
+   * Name them with an `L` or `R` and a number anywhere in the name (for example `Wheel_L1`, `LeftBogey02`, `TrackR3`).
 3. Move each attachment to the spot where the wheel should contact the ground. The script reads the tank body's orientation, so you do **not** have to rotate the attachments in any special way.
 
-You can duplicate the first attachment to create the others—just rename each copy to match its side and index.
+You can duplicate the first attachment to create the others—just rename each copy (or update its attributes) so the side and index are unique.
 
 ## 3. (Optional) Add wheel visuals
 The physics only need the attachments, but you can still add wheel meshes or parts for visuals. Weld them to the Hull or use constraints of your choice; the suspension forces are applied directly to the Hull.
