@@ -363,7 +363,7 @@ function TankSuspension:_step()
             local suspensionLength = math.max(distance, 0)
             local compression = math.clamp(settings.Suspension.RestLength - suspensionLength, 0, settings.Suspension.RestLength)
             local velocity = hull:GetVelocityAtPosition(origin)
-            local verticalSpeed = velocity:Dot(down)
+            local verticalSpeed = velocity:Dot(up)
             local verticalForceMag = springForce(settings.Suspension, compression, verticalSpeed)
             local verticalForce = up * verticalForceMag
 
