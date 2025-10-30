@@ -410,25 +410,58 @@ function TankSuspension:_step()
         local result = Workspace:Raycast(origin, rayDirection, self._raycastParams)
 
         if result then
+            local normal = result.Normal
+            local vertical = normal.Unit
+
             local distance = result.Distance - settings.Suspension.WheelRadius
             local suspensionLength = math.max(distance, 0)
             local compression = math.clamp(settings.Suspension.RestLength - suspensionLength, 0, settings.Suspension.RestLength)
-            local velocity = hull:GetVelocityAtPosition(origin)
-            local verticalSpeed = velocity:Dot(up)
-            local verticalForceMag = springForce(settings.Suspension, compression, verticalSpeed)
-            local verticalForce = up * verticalForceMag
+            local velocity = hull:GetVelocityAtPosition(result.Position)
+            local normalSpeed = velocity:Dot(vertical)
+            local verticalForceMag = springForce(settings.Suspension, compression, normalSpeed)
+            local verticalForce = vertical * verticalForceMag
 
-            local forwardSpeed = velocity:Dot(forward)
-            local lateralSpeed = velocity:Dot(right)
+            local forwardAxis = forward - vertical * forward:Dot(vertical)
+            if forwardAxis.Magnitude < 1e-4 then
+                forwardAxis = right - vertical * right:Dot(vertical)
+            end
+            if forwardAxis.Magnitude < 1e-4 then
+                forwardAxis = vertical:Cross(right)
+            end
+            if forwardAxis.Magnitude < 1e-4 then
+                forwardAxis = Vector3.new(0, 0, 1)
+                if math.abs(forwardAxis:Dot(vertical)) > 0.99 then
+                    forwardAxis = Vector3.new(1, 0, 0)
+                end
+            end
+            forwardAxis = forwardAxis.Unit
+
+            local lateralAxis = vertical:Cross(forwardAxis)
+            if lateralAxis.Magnitude < 1e-4 then
+                lateralAxis = right - vertical * right:Dot(vertical)
+            end
+            if lateralAxis.Magnitude < 1e-4 then
+                lateralAxis = vertical:Cross(forwardAxis)
+            end
+            if lateralAxis.Magnitude < 1e-4 then
+                lateralAxis = Vector3.new(1, 0, 0)
+                if math.abs(lateralAxis:Dot(vertical)) > 0.99 then
+                    lateralAxis = Vector3.new(0, 0, 1)
+                end
+            end
+            lateralAxis = lateralAxis.Unit
+
+            local forwardSpeed = velocity:Dot(forwardAxis)
+            local lateralSpeed = velocity:Dot(lateralAxis)
 
             local driveForceMag = computeDriveForce(settings, self.handBrake, wheel.command, forwardSpeed)
-            local longitudinal = forward * driveForceMag
-            local lateral = -right * (lateralSpeed * settings.Traction.LateralStiffness)
+            local longitudinal = forwardAxis * driveForceMag
+            local lateral = -lateralAxis * (lateralSpeed * settings.Traction.LateralStiffness)
             local rolling = Vector3.zero
-            if forwardSpeed ~= 0 then
-                rolling = -forward * settings.Traction.RollingFriction * sign(forwardSpeed)
+            if math.abs(forwardSpeed) > 1e-4 then
+                rolling = -forwardAxis * settings.Traction.RollingFriction * sign(forwardSpeed)
             end
-            local drag = -forward * (forwardSpeed * settings.Traction.LongitudinalStiffness) + rolling
+            local drag = -forwardAxis * (forwardSpeed * settings.Traction.LongitudinalStiffness) + rolling
 
             local planar = longitudinal + lateral + drag
             if planar.Magnitude > settings.Traction.MaxTractionForce then
