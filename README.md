@@ -34,7 +34,7 @@ Each section of the `SETTINGS` table controls a part of the simulation:
 
 * `Suspension`
   * `RestLength` – Target distance (in studs) from each attachment to the ground contact point.
-  * `SpringStiffness` – Strength of the spring when it compresses beyond the natural ride height.
+  * `SpringStiffness` – Force applied per stud of compression; higher values make the suspension stiffer.
   * `DampingRatio` – Multiplier applied to critical damping; raise it to kill oscillations, lower it for a softer response.
   * `Preload` – Extra compression (in studs) added to each spring so the tank settles without slamming to the stops.
   * `RaycastLength` – How far down to look for the ground from each attachment.

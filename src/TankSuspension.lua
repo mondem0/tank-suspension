@@ -412,12 +412,8 @@ function TankSuspension:_step(dt: number)
     local totalMass = hull.AssemblyMass
     local massPerWheel = totalMass / wheelCount
     local weightPerWheel = massPerWheel * gravity
-    local preload = math.clamp(suspension.Preload, 0, suspension.RestLength)
+    local preloadCompression = math.clamp(suspension.Preload, 0, suspension.RestLength)
     local stiffness = math.max(suspension.SpringStiffness, 0)
-    local naturalCompression = 0
-    if stiffness > 0 then
-        naturalCompression = math.clamp(weightPerWheel / stiffness + preload, 0, suspension.RestLength)
-    end
     local criticalDamping = 0
     if stiffness > 0 then
         criticalDamping = 2 * math.sqrt(stiffness * massPerWheel)
@@ -448,8 +444,10 @@ function TankSuspension:_step(dt: number)
             end
 
             local normalSpeed = relativeVelocity:Dot(normal)
-            local compressionError = compression - naturalCompression
-            local springForce = compressionError > 0 and compressionError * stiffness or 0
+            local springForce = (compression + preloadCompression) * stiffness
+            if springForce < 0 then
+                springForce = 0
+            end
             local dampingForce = -normalSpeed * damperCoefficient
             local verticalForceMag = math.clamp(springForce + dampingForce, 0, maxVerticalForce)
 
