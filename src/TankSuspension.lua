@@ -61,6 +61,7 @@ export type WheelConfig = {
     force: VectorForce,
     command: number,
     compression: number,
+    lastLength: number,
     inContact: boolean,
 }
 
@@ -248,6 +249,7 @@ function TankSuspension.new(model: Model, overrides: TankSettings?): TankSuspens
                     force = force,
                     command = 0,
                     compression = 0,
+                    lastLength = settings.Suspension.RestLength,
                     inContact = false,
                 })
             end
@@ -304,8 +306,8 @@ function TankSuspension:Bind()
         return
     end
 
-    self._connection = RunService.Heartbeat:Connect(function()
-        self:_step()
+    self._connection = RunService.Heartbeat:Connect(function(dt)
+        self:_step(dt)
     end)
 end
 
@@ -386,9 +388,13 @@ local function applyAirDamping(hull: BasePart, wheel: WheelConfig, settings: Tan
     wheel.compression = 0
 end
 
-function TankSuspension:_step()
+function TankSuspension:_step(dt: number)
     if self._destroyed then
         return
+    end
+
+    if not dt or dt <= 0 then
+        dt = 1 / 60
     end
 
     local settings = self.Settings
@@ -415,10 +421,20 @@ function TankSuspension:_step()
 
             local distance = result.Distance - settings.Suspension.WheelRadius
             local suspensionLength = math.max(distance, 0)
-            local compression = math.clamp(settings.Suspension.RestLength - suspensionLength, 0, settings.Suspension.RestLength)
+            local compression = math.max(settings.Suspension.RestLength - suspensionLength, 0)
+            local suspensionSpeed = 0
+            if dt > 0 then
+                suspensionSpeed = (suspensionLength - wheel.lastLength) / dt
+            end
             local velocity = hull:GetVelocityAtPosition(result.Position)
-            local normalSpeed = velocity:Dot(vertical)
-            local verticalForceMag = springForce(settings.Suspension, compression, normalSpeed)
+            local relativeNormalSpeed = -suspensionSpeed
+            if result.Instance and result.Instance:IsA("BasePart") then
+                local groundVelocity = result.Instance:GetVelocityAtPosition(result.Position)
+                relativeNormalSpeed = (velocity - groundVelocity):Dot(vertical)
+            elseif relativeNormalSpeed == 0 then
+                relativeNormalSpeed = velocity:Dot(vertical)
+            end
+            local verticalForceMag = springForce(settings.Suspension, compression, relativeNormalSpeed)
             local verticalForce = vertical * verticalForceMag
 
             local forwardAxis = forward - vertical * forward:Dot(vertical)
@@ -464,6 +480,13 @@ function TankSuspension:_step()
             local drag = -forwardAxis * (forwardSpeed * settings.Traction.LongitudinalStiffness) + rolling
 
             local planar = longitudinal + lateral + drag
+            local contactWeight = 0
+            if settings.Suspension.RestLength > 0 then
+                contactWeight = math.clamp(compression / settings.Suspension.RestLength, 0, 1)
+            else
+                contactWeight = compression > 0 and 1 or 0
+            end
+            planar *= contactWeight
             if planar.Magnitude > settings.Traction.MaxTractionForce then
                 planar = planar.Unit * settings.Traction.MaxTractionForce
             end
@@ -476,8 +499,10 @@ function TankSuspension:_step()
             else
                 wheel.compression = 0
             end
+            wheel.lastLength = suspensionLength
         else
             applyAirDamping(hull, wheel, settings)
+            wheel.lastLength = settings.Suspension.RestLength
         end
     end
 end
